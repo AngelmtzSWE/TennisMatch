@@ -1,0 +1,174 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from tqdm import tqdm  # ✅ progress bar
+
+# ========================
+# 1️⃣ Load Dataset
+# ========================
+df = pd.read_csv(r"C:\Users\rosal\OneDrive\Documents\TennisProject\tennis_data.csv.csv")
+df.columns = [col.strip() for col in df.columns]
+
+# Clean up missing or invalid values
+df = df[df['Pts_1'] > 0]
+df = df[df['Pts_2'] > 0]
+df = df[df['Odd_1'] > 0]
+df = df[df['Odd_2'] > 0]
+
+
+# ========================
+# 2️⃣ Build Player Stats
+# ========================
+def build_player_stats(df, player_name):
+    matches = df[(df['Player_1'] == player_name) | (df['Player_2'] == player_name)]
+    total_matches = len(matches)
+    wins = len(matches[matches['Winner'] == player_name])
+    win_rate = wins / total_matches if total_matches > 0 else 0
+
+    # Average points
+    points = []
+    for _, row in matches.iterrows():
+        if row['Player_1'] == player_name:
+            points.append(row['Pts_1'])
+        else:
+            points.append(row['Pts_2'])
+    avg_points = sum(points) / len(points) if points else 0
+
+    # Average odds
+    odds = []
+    for _, row in matches.iterrows():
+        if row['Player_1'] == player_name:
+            odds.append(row['Odd_1'])
+        else:
+            odds.append(row['Odd_2'])
+    avg_odds = sum(odds) / len(odds) if odds else 0
+
+    # Surface-specific win rate
+    surface_stats = {}
+    for surface in df['Surface'].unique():
+        surf_matches = matches[matches['Surface'] == surface]
+        surf_wins = len(surf_matches[surf_matches['Winner'] == player_name])
+        surface_stats[surface] = surf_wins / len(surf_matches) if len(surf_matches) > 0 else 0
+
+    return {
+        'total_matches': total_matches,
+        'win_rate': win_rate,
+        'avg_points': avg_points,
+        'avg_odds': avg_odds,
+        **{f"{surface}_win_rate": rate for surface, rate in surface_stats.items()}
+    }
+
+
+# ========================
+# 3️⃣ Precompute Stats Once
+# ========================
+players = set(df['Player_1']).union(df['Player_2'])
+player_stats = {player: build_player_stats(df, player) for player in tqdm(players, desc="Building player stats")}
+
+
+# ========================
+# 4️⃣ Prepare Match Features
+# ========================
+def prepare_match_features(player1, player2, surface):
+    stats1 = player_stats[player1]
+    stats2 = player_stats[player2]
+
+    features = {
+        'win_rate_diff': stats1['win_rate'] - stats2['win_rate'],
+        'avg_points_diff': stats1['avg_points'] - stats2['avg_points'],
+        'avg_odds_diff': stats1['avg_odds'] - stats2['avg_odds'],
+        'surface_diff': stats1.get(f"{surface}_win_rate", 0) - stats2.get(f"{surface}_win_rate", 0)
+    }
+    return pd.DataFrame([features])
+
+
+# ========================
+# 5️⃣ Train ML Model (with progress bar)
+# ========================
+match_features = []
+labels = []
+
+for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing matches"):
+    p1, p2, surface = row['Player_1'], row['Player_2'], row['Surface']
+    features = prepare_match_features(p1, p2, surface).iloc[0]
+    match_features.append(features)
+    labels.append(1 if row['Winner'] == p1 else 0)
+
+X = pd.DataFrame(match_features)
+y = labels
+
+print("\nTraining RandomForest model...")
+model = RandomForestClassifier(n_estimators=200, random_state=42)
+model.fit(X, y)
+
+print(f"✅ ML Model Accuracy: {model.score(X, y) * 100:.2f}%")
+
+
+# ========================
+# 6️⃣ Prediction Function
+# ========================
+def predict_winner(player1, player2, surface):
+    features = prepare_match_features(player1, player2, surface)
+    prob = model.predict_proba(features)[0][1]
+    winner = player1 if prob > 0.5 else player2
+    confidence = round(max(prob, 1 - prob) * 100, 2)
+    return winner, confidence
+
+
+# ========================
+# 7️⃣ User Interface
+# ========================
+players = sorted(players)
+
+
+def print_player_list():
+    for i, p in enumerate(players):
+        print(f"{i + 1}. {p}")
+
+
+def get_player(prompt):
+    while True:
+        try:
+            choice = int(input(prompt))
+            if 1 <= choice <= len(players):
+                return players[choice - 1]
+            else:
+                print("Invalid number, try again.")
+        except:
+            print("Please enter a valid number.")
+
+
+def get_surface():
+    surfaces = df['Surface'].unique()
+    for i, s in enumerate(surfaces):
+        print(f"{i + 1}. {s}")
+    while True:
+        try:
+            choice = int(input("Select surface: "))
+            if 1 <= choice <= len(surfaces):
+                return surfaces[choice - 1]
+            else:
+                print("Invalid number, try again.")
+        except:
+            print("Please enter a valid number.")
+
+
+def main_menu():
+    print("=== Tennis Match Predictor ===")
+    print("\nSelect Player 1:")
+    print_player_list()
+    player1 = get_player("Enter player number: ")
+
+    print("\nSelect Player 2:")
+    print_player_list()
+    player2 = get_player("Enter player number: ")
+
+    surface = get_surface()
+
+    winner, confidence = predict_winner(player1, player2, surface)
+    print(f"\n🎾 Predicted Winner: {winner} with confidence {confidence}%")
+
+
+# Run program
+if __name__ == "__main__":
+    main_menu()
